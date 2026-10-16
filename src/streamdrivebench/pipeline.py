@@ -40,7 +40,7 @@ class Runner:
         family=candidate['family'];t=candidate['query_second'];h=candidate['horizon_seconds'];q=candidate['question']
         checks={};errors=W.preflight(candidate,start,end,self.n);label=None
         if errors:return checks,errors,label
-        prefix=W.prefix(start,t)
+        prefix=W.prefix(candidate.get('history_start_second',start),t)
         needed=prefix+(list(range(t,t+31)) if family=='ETP' else list(range(t,t+h+1)))
         if not self.data.valid(self.eid,needed):return checks,['source_gap'],label
         if family=='HGI':
@@ -60,7 +60,7 @@ class Runner:
             if not all(pre[k] for k in ('valid','target_identifiable','unambiguous')):errors.append('prefix_invalid')
             if pre['future_presupposition']:errors.append('future_presupposition')
             if errors:return checks,errors,label
-            frames=list(range(max(start,t-2),t+h+1))
+            frames=list(range(max(candidate.get('history_start_second',start),t-2),t+h+1))
             fut=self.call(P.VERIFY_PROMPT,dict(stage='ad_future',image_frames=frames,query_second=t,
                 horizon_seconds=h,family=family,question=clean_question(q)),P.VERIFY)
             checks['future']=fut;errors+=P.evidence_errors(fut,frames)
@@ -86,7 +86,7 @@ class Runner:
     def commitment(self,row,start):
         t=row['query_second'];trigger=row['label']['trigger_second'];checks=[];errors=[]
         for cutoff in (trigger-1,trigger):
-            frames=sorted(set(W.prefix(start,t)+list(range(t,cutoff+1))))
+            frames=sorted(set(W.prefix(row.get('history_start_second',start),t)+list(range(t,cutoff+1))))
             value=self.causal(W.COMMIT_PROMPT,'etp_commitment',frames,cutoff,'ETP',row['question'],W.COMMIT,injection_second=t)
             checks.append(dict(cutoff=cutoff,result=value));errors+=P.evidence_errors(value,frames)
             if not value['target_identifiable'] or not value['evidence_decidable']:errors.append('causal_boundary_uncertain')
@@ -98,7 +98,9 @@ class Runner:
         if not errors:row['label']['causal_confirmation_checked']=True
         return errors
 
-    def window(self,start,end):
+    def window(self,start,end,requested_families=None):
+        requested_families=list(requested_families if requested_families is not None else ('HGI','AD','ETP'))
+        if not requested_families:raise ValueError('No requested families')
         frames=list(range(start,end));events=[];candidates=[];accepted=[];rejections=[]
         if not self.data.valid(self.eid,frames):
             return dict(start=start,end_exclusive=end,events=[],candidates=[],accepted=[],rejections=[{'reason':['source_gap_window']}])
@@ -131,7 +133,7 @@ class Runner:
             return dict(start=start,end_exclusive=end,events=[],candidates=[],accepted=[],rejections=rejections,authoring=[])
         authored=self.call(W.AUTHOR_PROMPT,dict(stage='qa_author',image_frames=frames,
             ownership_start=start,ownership_end_exclusive=end,video_num_seconds=self.n,
-            confirmed_events=events),W.AUTHOR)['question_sets']
+            confirmed_events=events,requested_families=requested_families),W.AUTHOR)['question_sets']
         ids=[s['event_id'] for s in authored]
         if len(ids)!=len(set(ids)) or set(ids)!={e['event_id'] for e in events}:
             raise ValueError('QA author must cover exactly the confirmed event IDs')
@@ -141,12 +143,12 @@ class Runner:
             authored_event=by_id[event_id]
             families=[q['family'] for q in authored_event['questions']]
             omissions=authored_event['omissions'];accounted=families+[o['family'] for o in omissions]
-            if len(accounted)!=3 or set(accounted)!={'HGI','AD','ETP'} or any(not o['reason'].strip() for o in omissions):
+            if len(accounted)!=len(requested_families) or set(accounted)!=set(requested_families) or any(not o['reason'].strip() for o in omissions):
                 raise ValueError('Each QA family requires one question or one justified omission')
             for candidate in authored_event['questions']:
                 family=candidate['family'];q=candidate['question'];query=candidate['query_second']
                 row=dict(query_id=event_id+'-'+family.lower(),event_id=event_id,transition_id=event_id,
-                    episode_id=self.eid,family=family,query_second=query,question=q,checks={},errors=[],label=None,
+                    episode_id=self.eid,family=family,query_second=query,history_start_second=candidate.get('history_start_second',start),question=q,checks={},errors=[],label=None,
                     strict_transition_link=False,probe_series_id=digest([event_id,family,q['predicate']])[:16],human_approved=False,
                     discovery_start=start,discovery_end_exclusive=end,authoring_policy='confirmed_event_then_offline_author_causal_audit')
                 key=P.model_input_key(family,query,q)
@@ -156,7 +158,7 @@ class Runner:
                 else:
                     seen.add(key);row['checks'],row['errors'],row['label']=self.verify(candidate,start,end)
                 if not row['errors']:
-                    link_frames=sorted(set(boundary['evidence_frames']+row['label']['evidence_frames']+W.prefix(start,query)))
+                    link_frames=sorted(set(boundary['evidence_frames']+row['label']['evidence_frames']+W.prefix(row['history_start_second'],query)))
                     # Include all endpoint evidence for AD and full monitoring for ETP.
                     if family=='AD':link_frames=sorted(set(link_frames+list(range(query,query+4))))
                     if family=='ETP':link_frames=sorted(set(link_frames+list(range(query,query+31))))
@@ -190,11 +192,12 @@ def clean_question(q):
     return {k:q[k] for k in ('question','choices','target_description','predicate','answer_slot')}
 
 
-def export(root,episode,windows,trace):
+def export(root,episode,windows,trace,allow_sparse=False):
     root=Path(root);events=[e for w in windows for e in w['events']]
     candidates=[q for w in windows for q in w['candidates']];accepted=[q for w in windows for q in w['accepted']]
     coverage=[s for w in windows for s in range(w['start'],w['end_exclusive'])]
-    if coverage!=list(range(episode['num_frames'])):raise ValueError('Overlapping or missing discovery windows')
+    if len(coverage)!=len(set(coverage)) or any(s<0 or s>=episode['num_frames'] for s in coverage):raise ValueError('Invalid/overlapping discovery windows')
+    if not allow_sparse and coverage!=list(range(episode['num_frames'])):raise ValueError('Overlapping or missing discovery windows')
     flat=[];groups={e['event_id']:dict(event_id=e['event_id'],episode_id=episode['episode_id'],
         split_group=episode['source_sequence'],transitions=[e['transition_id']],qa_ids=[],families=[]) for e in events}
     for row in accepted:
@@ -203,7 +206,7 @@ def export(root,episode,windows,trace):
         t=row['query_second'];family=row['family'];q=row['question']
         flat.append(dict(query_id=row['query_id'],episode_id=episode['episode_id'],family=family,query_second=t,
             model_input=dict(question=q['question'],choices=q['choices'],target_description=q['target_description'],predicate=q['predicate']),
-            input_policy=dict(prefix_end_second=t,history_start_second=row['discovery_start'],
+            input_policy=dict(prefix_end_second=t,history_start_second=row.get('history_start_second',row['discovery_start']),
                 online_monitor_end_second=t+30 if family=='ETP' else t,evaluation_session='independent_per_question'),
             evaluator_only=dict(event_id=row['event_id'],transition_id=row['transition_id'],probe_series_id=row['probe_series_id'],
                 ground_truth=row['label'],strict_transition_link=row['strict_transition_link'],human_approved=False,
@@ -216,6 +219,8 @@ def export(root,episode,windows,trace):
     commitment=[q for q in candidates if 'commitment' in q['checks']]
     passed=sum(q['family']=='ETP' and q['label'].get('causal_confirmation_checked',False) for q in accepted)
     report=dict(status='complete_pending_human_review',episodes=1,discovery_windows=len(windows),
+        discovery_policy='sparse_selected_windows' if allow_sparse else 'all_windows',
+        selected_discovery_seconds=len(coverage),video_num_seconds=episode['num_frames'],
         verified_transitions=len(events),unique_events=len(events),qa_candidates=len(candidates),accepted_qa=len(accepted),
         accepted_by_family=dict(Counter(q['family'] for q in accepted)),etp_outcomes=dict(Counter(q['label']['outcome'] for q in accepted if q['family']=='ETP')),
         events_with_all_three=sum(set(g['families'])=={'HGI','AD','ETP'} for g in groups.values()),strict_triplet_transitions=sorted(strict_ids),
@@ -226,7 +231,7 @@ def export(root,episode,windows,trace):
         limitations=['Offline full-window authorship is outcome-aware; causal audits do not eliminate selection/wording bias.',
                      'At most one event per window by default; not exhaustive discovery. Window boundaries can censor events.',
                      'ETP monitors a full 30 seconds across discovery boundaries; tail windows are never shortened into negatives.',
-                     'HGI/AD history starts at the discovery window; evaluators must honor input_policy.history_start_second.',
+                     'History is selected per question within the discovery window, up to 30 seconds; evaluators must honor input_policy.history_start_second.',
                      'Automated checks are not human ground truth. Legacy reused releases have separate provenance.'])
     for group in groups.values():group['families']=sorted(set(group['families']))
     for name,value in dict(events=events,event_groups=list(groups.values()),qa_candidates=candidates,accepted_qa=accepted,

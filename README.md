@@ -1,10 +1,24 @@
-# StreamDriveBench QA Generation Pipeline
+# StreamDriveBench QA Generation Pipeline — specific 分支
 
 从任意长度的**前视驾驶视频**构建由事件串联的三类问题：HGI（历史证据理解当前状态）、AD（预测3秒后的状态）、ETP（等待可观察事件发生后及时回答）。这是从现有 PIE/KITTI 工作流整理出的独立实现，不依赖原工程、特定数据集目录或本机模型。
 
 核心顺序：**先发现事件并独立确认，再围绕确认事件生成三类 QA**。每30秒一个不重叠发现窗口，默认最多1个事件；答案经过独立核验，完成后全局重排选项，ETP 的 `SILENT` 永远是最后一项。
 
-## 最快开始
+## 新增数据集：按计划配额生成（推荐入口）
+
+本分支为 BDD100K / OpenDV-YouTube / Boreas 提供**先抽样、配额预留、缺额补充、到量即停**流程，分别生成最多50 / 4,000 / 750条。支持按题目需要选择不超过30秒的历史，不要求完整过去30秒；ETP仍保留未来完整30秒监控。已有PIE/nuScenes/KITTI结果不会被重建。
+
+```bash
+pip install -e .
+export OPENAI_API_KEY='YOUR_API_KEY'
+python -m streamdrivebench.specific --dataset opendv-youtube \
+  --video-dir /path/to/videos --model gpt-6.1-sol --dry-run
+# 移除 --dry-run 开始生成
+```
+
+ACP入口：`scripts/run_specific_acp.sh`。请阅读 **[配额、预算、续跑与ACP完整说明](SPECIFIC.md)**。下文 `streamdrivebench` / `run_acp.sh` 是保留的通用全扫描入口，**不含数据集配额限制**。
+
+## 通用全扫描入口（原流程）
 
 环境：Linux/macOS、Python 3.10+、可联网访问的 Responses-compatible 视觉模型服务。视频解码在 CPU 上执行，不需要本地 GPU/VLM。
 
@@ -56,7 +70,7 @@ streamdrivebench --model gpt-6.1-sol --video-dir /path/to/videos \
 - 发现窗口为 `[0,30)、[30,60)…`，末尾不足30秒也扫描。
 - 解码后以首个有效视频 PTS 为0，按秒取“不晚于该秒的最新帧”。支持非零起始PTS、常见可变帧率、容器缺少时长/帧数的情况。每次仅保留当前解码帧，元数据与提取图片随时长增加。
 - 910×512 等比例填黑边，1fps，不扭曲原图比例。取到的源帧若比该秒陈旧超过0.5秒，标为不可用，避免用陈旧图像伪造时间证据；低帧率/大时间戳断层可能导致窗口被跳过。
-- HGI/AD 的历史从发现窗口起点开始。AD查询和3秒后的标签都必须在本发现窗口内。
+- 每题由作者选择历史起点，范围在发现窗内且距查询不超过30秒，不要求凑满30秒；HGI需要非零历史。AD查询和3秒后的标签都必须在本发现窗口内。
 - ETP可从查询时刻向后跨发现窗口监控完整30秒（31个整数秒观测）；视频尾部不足完整监控期时跳过ETP，**不截短成负例**。
 - 很短的视频可能没有事件或合格QA，合法输出为0条。不存在“任何视频都必须产出三类题”的保证。
 - 无法解码、无PTS、非单调PTS会明确失败，不猜测时间。视频内容应为驾驶场景；这里“任意”指时长和文件组织，不是任意领域语义。

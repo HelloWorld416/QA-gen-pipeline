@@ -1,0 +1,13 @@
+{
+  "seed": 20261016,
+  "datasets": {
+    "bdd100k": {"videos": 50, "hours_reference": 0.56, "targets": {"HGI": 19, "AD": 18, "ETP": 13}, "max_api_attempts": 1000},
+    "opendv-youtube": {"videos": 352, "hours_reference": 76.62, "targets": {"HGI": 1545, "AD": 1415, "ETP": 1040}, "max_api_attempts": 60000},
+    "boreas": {"videos": 125, "hours_reference": 11.94, "targets": {"HGI": 290, "AD": 265, "ETP": 195}, "max_api_attempts": 12000}
+  },
+  "already_built_sample_targets": {
+    "nuscenes": {"videos": 50, "targets": {"HGI": 19, "AD": 18, "ETP": 13}},
+    "pie": {"videos": 53, "targets": {"HGI": 316, "AD": 294, "ETP": 190}},
+    "kitti-360": {"videos": 18, "targets": {"HGI": 129, "AD": 112, "ETP": 109}}
+  }
+}

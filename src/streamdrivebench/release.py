@@ -62,7 +62,7 @@ def validate(old,new,audit):
 
 
 
-def publish(entries, output):
+def publish(entries, output, build_metadata=None):
     """Publish all completed videos together, never silently publish partial totals."""
     output=Path(output);output.mkdir(parents=True,exist_ok=True)
     rows=[];episodes=[];strict=set();events=[];groups=[];sources=[];counts=[]
@@ -91,6 +91,7 @@ def publish(entries, output):
     totals={f:sum(q['family']==f for q in balanced) for f in ('HGI','AD','ETP')}
     summary=dict(status='complete_pending_human_review',videos=len(entries),queries=len(balanced),by_family=totals,per_video=counts,
         etp_outcomes=dict(Counter(q['evaluator_only']['ground_truth']['outcome'] for q in balanced if q['family']=='ETP')))
+    if build_metadata:summary.update(build_metadata)
     objects=dict(queries_all=balanced,model_inputs=[{k:v for k,v in q.items() if k!='evaluator_only'} for q in balanced],
         labels={q['query_id']:q['evaluator_only'] for q in balanced},option_mapping_audit=mapping,
         queries_strict_triplets=[q for q in balanced if q['query_id'] in strict],episodes_metadata={'episodes':episodes},

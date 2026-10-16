@@ -3,7 +3,7 @@ from . import checks as P
 import re
 
 CANDIDATE = obj_schema(dict(family={'type':'string','enum':['HGI','AD','ETP']},
-    query_second=INTEGER,horizon_seconds=INTEGER,question=P.QUESTION))
+    query_second=INTEGER,history_start_second=INTEGER,horizon_seconds=INTEGER,question=P.QUESTION))
 EVENT = obj_schema(dict(actor=STRING,behavior=STRING,before_state=STRING,after_state=STRING,
     approximate_transition=INTEGER,evidence_frames=INTS))
 PROPOSAL = obj_schema(dict(events=P.array(EVENT),coverage_notes=STRING))
@@ -12,8 +12,8 @@ OMISSION = obj_schema(dict(family={'type':'string','enum':['HGI','AD','ETP']},re
 AUTHOR = obj_schema(dict(question_sets=P.array(obj_schema(dict(
     event_id=STRING,questions=P.array(CANDIDATE),omissions=P.array(OMISSION))))))
 AUTHOR_PROMPT = """Generate driving QA ONLY for the supplied confirmed_events. Their boundaries have already passed independent verification. Do not invent events, change their identifiers or boundaries, or attach questions to a rejected event. All events share the supplied window images: return exactly one question_set per confirmed event_id.
-For EACH event actively attempt one HGI, one AD and one ETP question concerning the same identifiable actor and continuous behavior episode. Never silently omit a family: provide either exactly one question or an explicit evidence-based omission reason for each of HGI, AD, ETP. Do not invent unsupported questions to fill quotas. Do not output answers. Avoid duplicate model inputs across events.
-HGI follows historical evidence within this window and concerns current state/identity genuinely requiring history. AD predicts observable behavior exactly 3 seconds later; the query precedes the confirmed transition and both query and forecast lie inside this window. ETP injection precedes the confirmed transition inside this window and requires a full 30-second monitor within the video; it can extend beyond the discovery window. Use video_num_seconds to omit ETP when query_second+30 >= video_num_seconds. Do not assume unseen future outcomes.
+For EACH event actively attempt one question for EACH requested_families entry (default HGI, AD, ETP) concerning the same identifiable actor and continuous behavior episode. Never silently omit a family: provide either exactly one question or an explicit evidence-based omission reason for each requested family. Never generate a family absent from requested_families. Do not invent unsupported questions to fill quotas. Do not output answers. Avoid duplicate model inputs across events.
+Every question specifies history_start_second: choose only the history needed for this question, from ownership_start through query_second, with query_second-history_start_second <= 30. A full past 30 seconds is NOT required. HGI needs at least one earlier observation; AD/ETP may use zero history if sufficient. HGI follows this selected historical evidence within this window and concerns current state/identity genuinely requiring history. AD predicts observable behavior exactly 3 seconds later; the query precedes the confirmed transition and both query and forecast lie inside this window. ETP injection precedes the confirmed transition inside this window and requires a full 30-second monitor within the video; it can extend beyond the discovery window. Use video_num_seconds to omit ETP when query_second+30 >= video_num_seconds. Do not assume unseen future outcomes.
 ETP must monitor ONE atomic driving-state condition. Before it occurs, and throughout the interval if it never occurs, remain SILENT. Never request a timeout/no-event answer. Loss of visibility is not a second trigger. Non-SILENT options describe possible answers when the single condition triggers, NOT timeout, non-occurrence or lost visibility. Do not instruct emitting a hardcoded answer text or letter: refer to selecting the corresponding option; final option letters are assigned later. Exactly one SILENT option. Prefer an observable transition of the confirmed event when supported.
 Questions use current-time identifiable target descriptions, no future attributes, event labels or revealing wording. A conditional when/if does not assert future occurrence. HGI/AD have 2-4 alternatives and no SILENT; ETP has 2-4 non-SILENT alternatives plus SILENT. horizon_seconds=3 for AD, 0 otherwise. rationale_from_prefix cites only evidence available at query_second. Author sees the entire discovery window and confirmed event: this is offline outcome-aware authorship, not a causal predictor. Subsequent independent audits verify answers and causal validity."""
 
@@ -30,6 +30,9 @@ def prefix(start,t):
 def preflight(candidate,start,end,n):
     family=candidate['family'];t=candidate['query_second'];h=candidate['horizon_seconds']
     errors=P.question_errors(candidate['question'],family)
+    history=candidate.get('history_start_second',start)
+    if type(history) is not int or not max(start,t-30)<=history<=t:errors.append('invalid_history_window')
+    if family=='HGI' and history>=t:errors.append('no_history')
     if family!='ETP' and len(candidate['question']['choices'])>4:errors.append('too_many_choices')
     if not start<=t<end:errors.append('query_outside_window')
     if h!=(3 if family=='AD' else 0):errors.append('invalid_horizon')

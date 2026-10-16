@@ -15,7 +15,7 @@ def question(family):
 
 
 def candidate(family,t):
-    return dict(family=family,query_second=t,horizon_seconds=3 if family=='AD' else 0,question=question(family))
+    return dict(family=family,query_second=t,history_start_second=(t//30)*30,horizon_seconds=3 if family=='AD' else 0,question=question(family))
 
 
 class Data:

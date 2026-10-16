@@ -16,9 +16,9 @@ TIME_POLICY='''Images are sampled on a 1-second benchmark grid using the latest 
 
 
 class Client:
-    def __init__(self,output,config,data,eid,gate,max_calls):
+    def __init__(self,output,config,data,eid,gate,max_calls,budget=None):
         self.output=Path(output);self.config=config;self.data=data;self.eid=eid;self.gate=gate
-        self.max_calls=max_calls;self.calls=0
+        self.max_calls=max_calls;self.calls=0;self.budget=budget
         self.key=os.environ.get('OPENAI_API_KEY')
 
     def call(self,prompt,payload,images,schema):
@@ -46,6 +46,7 @@ class Client:
         retries=self.config.get('max_retries',5)
         for attempt in range(retries+1):
             if self.max_calls and self.calls>=self.max_calls:raise RuntimeError('Per-clip per-run API attempt limit reached; rerun to resume')
+            if self.budget:self.budget.reserve()
             self.calls+=1
             attempt_path=self.output/'attempts'/f'{fingerprint}_{time.time_ns()}.json'
             record=dict(stage=payload.get('stage'),fingerprint=fingerprint,attempt=attempt+1,status='started')
@@ -64,10 +65,12 @@ class Client:
                     error=type(exc).__name__
                     retry=not isinstance(exc,ssl.SSLCertVerificationError) and not isinstance(getattr(exc,'reason',None),ssl.SSLCertVerificationError)
             if error:
+                if self.budget:self.budget.finish()
                 dump_json(dict(record,status='transport_failed',error_type=error),attempt_path)
                 if not retry or attempt==retries:raise RuntimeError(f'API transport failed: {error}; cached work retained') from None
                 print('API_RETRY',self.eid,payload.get('stage'),error,attempt+1,flush=True)
                 time.sleep(min(60,max(0,retry_after) if retry_after is not None else 2**(attempt+1)+random.random()));continue
+            if self.budget:self.budget.finish(raw.get('usage',{}))
             # Record usage even when the response is truncated or schema-invalid.
             dump_json(dict(record,status='received',usage=raw.get('usage',{}),response_status=raw.get('status')),attempt_path)
             if raw.get('status')!='completed':raise RuntimeError('API response incomplete/refused; checkpoint remains pending')
